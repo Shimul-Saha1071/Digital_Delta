@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -6,7 +6,9 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  Dimensions,
 } from "react-native";
+import { WebView } from "react-native-webview";
 import { COLORS, NODE_COLORS, NODE_ICONS } from "../lib/config";
 import { fetchMap, computeRoute, getEdgeRisk } from "../lib/api";
 import SectionHeader from "./components/SectionHeader";
@@ -16,6 +18,101 @@ const VEHICLES = [
   { key: "speedboat", icon: "🚤", label: "Speedboat", rule: "Rivers only" },
   { key: "drone", icon: "🚁", label: "Drone", rule: "All edges" },
 ];
+
+const { width } = Dimensions.get("window");
+
+// Offline Leaflet map HTML
+const getMapHTML = (nodes, route, floodedEdges) => {
+  const nodeMarkers = nodes
+    .map((n) => {
+      const colors = {
+        central_command: "#3B82F6",
+        supply_drop: "#10B981",
+        relief_camp: "#F59E0B",
+        hospital: "#EF4444",
+        waypoint: "#6B7280",
+      };
+      const color = colors[n.type] || "#6B7280";
+      const icons = {
+        central_command: "🏛",
+        supply_drop: "📦",
+        relief_camp: "⛺",
+        hospital: "🏥",
+        waypoint: "📍",
+      };
+      const icon = icons[n.type] || "📍";
+      return `
+      L.circleMarker([${n.lat}, ${n.lng}], {
+        radius: 14,
+        fillColor: '${color}',
+        color: '#fff',
+        weight: 2,
+        fillOpacity: 0.9
+      }).addTo(map)
+        .bindPopup('<b>${icon} ${n.name}</b><br/>${n.type.replace(/_/g, " ")}');
+    `;
+    })
+    .join("\n");
+
+  const routeLine =
+    route && route.path && route.path.length > 1
+      ? `
+    var routeCoords = ${JSON.stringify(
+      route.path
+        .map((nodeId) => {
+          const n = nodes.find((x) => x.id === nodeId);
+          return n ? [n.lat, n.lng] : null;
+        })
+        .filter(Boolean),
+    )};
+    L.polyline(routeCoords, {
+      color: '#3B82F6',
+      weight: 5,
+      opacity: 0.8,
+      dashArray: '10, 5'
+    }).addTo(map).bindPopup('Route: ${route.path?.join(" → ")} (${route.total_time_mins} min)');
+  `
+      : "";
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body { margin: 0; padding: 0; background: #0A0E1A; }
+    #map { width: 100vw; height: 100vh; }
+    .leaflet-popup-content-wrapper {
+      background: #111827;
+      color: #F9FAFB;
+      border: 1px solid #1F2937;
+    }
+    .leaflet-popup-tip { background: #111827; }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+  var map = L.map('map', {
+    center: [24.8949, 91.8687],
+    zoom: 9,
+    zoomControl: true,
+  });
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap',
+    maxZoom: 18,
+  }).addTo(map);
+
+  ${nodeMarkers}
+  ${routeLine}
+</script>
+</body>
+</html>
+  `;
+};
 
 export default function MapScreen() {
   const [nodes, setNodes] = useState([]);
@@ -27,6 +124,7 @@ export default function MapScreen() {
   const [mlResult, setMlResult] = useState(null);
   const [mlLoading, setMlLoading] = useState(false);
   const [online, setOnline] = useState(false);
+  const [mapReady, setMapReady] = useState(false);
 
   useEffect(() => {
     fetchMap().then((r) => {
@@ -52,8 +150,37 @@ export default function MapScreen() {
     setMlLoading(false);
   };
 
+  const mapHTML = getMapHTML(nodes, route, []);
+
   return (
-    <ScrollView style={s.screen}>
+    <ScrollView style={s.screen} nestedScrollEnabled={true}>
+      {/* Live Map */}
+      <SectionHeader title="🗺️  LIVE MAP  (Leaflet + OpenStreetMap)" />
+      <View style={s.mapContainer}>
+        {nodes.length > 0 ? (
+          <WebView
+            source={{ html: mapHTML }}
+            style={s.map}
+            onLoad={() => setMapReady(true)}
+            javaScriptEnabled={true}
+            domStorageEnabled={true}
+            startInLoadingState={true}
+            renderLoading={() => (
+              <View style={s.mapLoading}>
+                <ActivityIndicator color={COLORS.primary} size="large" />
+                <Text style={s.mapLoadingTxt}>Loading map...</Text>
+              </View>
+            )}
+          />
+        ) : (
+          <View style={s.mapLoading}>
+            <ActivityIndicator color={COLORS.primary} size="large" />
+            <Text style={s.mapLoadingTxt}>Loading nodes...</Text>
+          </View>
+        )}
+      </View>
+
+      {/* Online status */}
       <View
         style={[
           s.banner,
@@ -70,6 +197,7 @@ export default function MapScreen() {
         </Text>
       </View>
 
+      {/* Origin selector */}
       <SectionHeader title="SELECT ORIGIN" />
       <View style={s.btnRow}>
         {nodes.map((n) => (
@@ -96,6 +224,7 @@ export default function MapScreen() {
         ))}
       </View>
 
+      {/* Vehicle selector */}
       <SectionHeader title="VEHICLE TYPE  (M4.3)" />
       <View style={s.vehicleRow}>
         {VEHICLES.map((v) => (
@@ -118,6 +247,7 @@ export default function MapScreen() {
         ))}
       </View>
 
+      {/* Node list */}
       <SectionHeader title="DESTINATION — TAP TO ROUTE" />
       {nodes.map((node) => {
         const nColor = NODE_COLORS[node.type] || COLORS.textMuted;
@@ -149,6 +279,7 @@ export default function MapScreen() {
         );
       })}
 
+      {/* Route result */}
       {(loading || route) && (
         <>
           <SectionHeader title="ROUTE RESULT" />
@@ -190,14 +321,22 @@ export default function MapScreen() {
                   🚁 Drone handoff needed (M8)
                 </Text>
               )}
+              {route.status !== "no_path" && (
+                <View style={s.mapNote}>
+                  <Text style={s.mapNoteTxt}>
+                    📍 Blue dashed line shows route on map above
+                  </Text>
+                </View>
+              )}
             </View>
           )}
         </>
       )}
 
+      {/* ML Risk */}
       <SectionHeader title="ML ROUTE DECAY  (M7)" />
       <Text style={s.mlDesc}>
-        Tap an edge to predict flood risk using the on-device ML model.
+        Tap an edge to predict flood risk using on-device ML model.
       </Text>
       <View style={s.btnRow}>
         {["E1", "E2", "E3", "E4", "E5", "E6", "E7"].map((e) => (
@@ -288,6 +427,16 @@ export default function MapScreen() {
 
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: COLORS.background },
+  mapContainer: { height: 300, marginHorizontal: 0, overflow: "hidden" },
+  map: { flex: 1, height: 300 },
+  mapLoading: {
+    height: 300,
+    backgroundColor: COLORS.surface,
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 12,
+  },
+  mapLoadingTxt: { color: COLORS.textMuted, fontSize: 13 },
   banner: {
     marginHorizontal: 16,
     marginTop: 12,
@@ -392,6 +541,13 @@ const s = StyleSheet.create({
     textAlign: "right",
   },
   routeHint: { color: COLORS.danger, fontSize: 11, marginTop: 10 },
+  mapNote: {
+    marginTop: 10,
+    backgroundColor: "#0A1A30",
+    borderRadius: 8,
+    padding: 8,
+  },
+  mapNoteTxt: { color: COLORS.primary, fontSize: 11 },
   mlDesc: {
     color: COLORS.textMuted,
     fontSize: 11,

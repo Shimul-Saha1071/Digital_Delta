@@ -6,6 +6,8 @@ import DashboardScreen from "./screens/DashboardScreen";
 import MapScreen from "./screens/MapScreen";
 import AuthScreen from "./screens/AuthScreen";
 import SyncScreen from "./screens/SyncScreen";
+import DeliveryScreen from "./screens/DeliveryScreen";
+import DroneScreen from "./screens/DroneScreen";
 import { COLORS } from "./lib/config";
 
 const Tab = createBottomTabNavigator();
@@ -32,7 +34,7 @@ export default function App() {
           },
           tabBarActiveTintColor: COLORS.primary,
           tabBarInactiveTintColor: COLORS.textMuted,
-          tabBarLabelStyle: { fontSize: 10, fontWeight: "700" },
+          tabBarLabelStyle: { fontSize: 9, fontWeight: "700" },
         }}
       >
         <Tab.Screen
@@ -40,19 +42,41 @@ export default function App() {
           component={DashboardScreen}
           options={{
             tabBarIcon: ({ focused }) => (
-              <Text style={{ fontSize: 18, opacity: focused ? 1 : 0.4 }}>
+              <Text style={{ fontSize: 15, opacity: focused ? 1 : 0.4 }}>
                 📊
               </Text>
             ),
           }}
         />
         <Tab.Screen
-          name="Map & Routes"
+          name="Map"
           component={MapScreen}
           options={{
             tabBarIcon: ({ focused }) => (
-              <Text style={{ fontSize: 18, opacity: focused ? 1 : 0.4 }}>
+              <Text style={{ fontSize: 15, opacity: focused ? 1 : 0.4 }}>
                 🗺️
+              </Text>
+            ),
+          }}
+        />
+        <Tab.Screen
+          name="Delivery"
+          component={DeliveryScreen}
+          options={{
+            tabBarIcon: ({ focused }) => (
+              <Text style={{ fontSize: 15, opacity: focused ? 1 : 0.4 }}>
+                📦
+              </Text>
+            ),
+          }}
+        />
+        <Tab.Screen
+          name="Drone"
+          component={DroneScreen}
+          options={{
+            tabBarIcon: ({ focused }) => (
+              <Text style={{ fontSize: 15, opacity: focused ? 1 : 0.4 }}>
+                🚁
               </Text>
             ),
           }}
@@ -62,18 +86,18 @@ export default function App() {
           component={AuthScreen}
           options={{
             tabBarIcon: ({ focused }) => (
-              <Text style={{ fontSize: 18, opacity: focused ? 1 : 0.4 }}>
+              <Text style={{ fontSize: 15, opacity: focused ? 1 : 0.4 }}>
                 🔐
               </Text>
             ),
           }}
         />
         <Tab.Screen
-          name="CRDT Sync"
+          name="Sync"
           component={SyncScreen}
           options={{
             tabBarIcon: ({ focused }) => (
-              <Text style={{ fontSize: 18, opacity: focused ? 1 : 0.4 }}>
+              <Text style={{ fontSize: 15, opacity: focused ? 1 : 0.4 }}>
                 🔄
               </Text>
             ),
