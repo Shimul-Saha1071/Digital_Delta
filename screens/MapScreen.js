@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Dimensions,
 } from "react-native";
 import { WebView } from "react-native-webview";
 import { COLORS, NODE_COLORS, NODE_ICONS } from "../lib/config";
@@ -19,10 +18,40 @@ const VEHICLES = [
   { key: "drone", icon: "🚁", label: "Drone", rule: "All edges" },
 ];
 
-const { width } = Dimensions.get("window");
+const getMapHTML = (nodes, edges, route) => {
+  if (!nodes || nodes.length === 0) {
+    return '<html><body style="background:#0A0E1A;display:flex;align-items:center;justify-content:center;height:100vh"><p style="color:#6B7280;font-family:sans-serif">Loading map...</p></body></html>';
+  }
 
-// Offline Leaflet map HTML
-const getMapHTML = (nodes, route, floodedEdges) => {
+  // Draw all edges first
+  const edgeLines = (edges || [])
+    .map((e) => {
+      const src = nodes.find((n) => n.id === e.source);
+      const tgt = nodes.find((n) => n.id === e.target);
+      if (!src || !tgt) return "";
+      const color = e.is_flooded
+        ? "#EF4444"
+        : e.type === "river"
+          ? "#3B82F6"
+          : "#10B981";
+      const weight = e.is_flooded ? 3 : 2;
+      const dash = e.is_flooded ? "8, 6" : "null";
+      const label = e.is_flooded
+        ? "🌊 FLOODED"
+        : e.type === "river"
+          ? "🚤 River"
+          : "🚛 Road";
+      return `
+      L.polyline(
+        [[${src.lat},${src.lng}],[${tgt.lat},${tgt.lng}]],
+        { color:'${color}', weight:${weight}, opacity:0.8, ${e.is_flooded ? "dashArray:'8,6'," : e.type === "river" ? "" : ""} }
+      ).addTo(map)
+       .bindPopup('<b>${e.id}</b><br/>${label}<br/>${e.base_weight_mins} min');
+    `;
+    })
+    .join("\n");
+
+  // Draw all node markers
   const nodeMarkers = nodes
     .map((n) => {
       const colors = {
@@ -32,7 +61,6 @@ const getMapHTML = (nodes, route, floodedEdges) => {
         hospital: "#EF4444",
         waypoint: "#6B7280",
       };
-      const color = colors[n.type] || "#6B7280";
       const icons = {
         central_command: "🏛",
         supply_drop: "📦",
@@ -40,82 +68,107 @@ const getMapHTML = (nodes, route, floodedEdges) => {
         hospital: "🏥",
         waypoint: "📍",
       };
+      const color = colors[n.type] || "#6B7280";
       const icon = icons[n.type] || "📍";
       return `
-      L.circleMarker([${n.lat}, ${n.lng}], {
-        radius: 14,
-        fillColor: '${color}',
-        color: '#fff',
-        weight: 2,
-        fillOpacity: 0.9
+      L.circleMarker([${n.lat},${n.lng}], {
+        radius:11, fillColor:'${color}',
+        color:'#fff', weight:2, fillOpacity:0.95
       }).addTo(map)
-        .bindPopup('<b>${icon} ${n.name}</b><br/>${n.type.replace(/_/g, " ")}');
+       .bindPopup('<b>${icon} ${n.name}</b><br/>${n.id} · ${n.type.replace(/_/g, " ")}');
     `;
     })
     .join("\n");
 
-  const routeLine =
-    route && route.path && route.path.length > 1
-      ? `
-    var routeCoords = ${JSON.stringify(
-      route.path
-        .map((nodeId) => {
-          const n = nodes.find((x) => x.id === nodeId);
-          return n ? [n.lat, n.lng] : null;
-        })
-        .filter(Boolean),
-    )};
-    L.polyline(routeCoords, {
-      color: '#3B82F6',
-      weight: 5,
-      opacity: 0.8,
-      dashArray: '10, 5'
-    }).addTo(map).bindPopup('Route: ${route.path?.join(" → ")} (${route.total_time_mins} min)');
-  `
-      : "";
+  // Draw route line on top
+  let routeLine = "";
+  if (
+    route &&
+    route.path &&
+    route.path.length > 1 &&
+    route.status !== "no_path"
+  ) {
+    const routeCoords = route.path
+      .map((id) => nodes.find((n) => n.id === id))
+      .filter(Boolean)
+      .map((n) => [n.lat, n.lng]);
+
+    if (routeCoords.length > 1) {
+      const startNode = nodes.find((n) => n.id === route.path[0]);
+      const endNode = nodes.find(
+        (n) => n.id === route.path[route.path.length - 1],
+      );
+
+      routeLine = `
+        var routeCoords = ${JSON.stringify(routeCoords)};
+        var routeLine = L.polyline(routeCoords, {
+          color: '#60A5FA',
+          weight: 7,
+          opacity: 1,
+          dashArray: '14, 7',
+          lineCap: 'round',
+          lineJoin: 'round'
+        }).addTo(map);
+        routeLine.bindPopup('<b>🔵 ACTIVE ROUTE</b><br/>${route.path?.join(" → ")}<br/>⏱ ${route.total_time_mins} min · ${route.vehicle || "truck"}');
+
+        ${startNode ? `L.circleMarker([${startNode.lat},${startNode.lng}],{radius:16,fillColor:'#10B981',color:'#fff',weight:3,fillOpacity:1}).addTo(map).bindPopup('<b>🟢 START: ${startNode.name}</b>');` : ""}
+        ${endNode ? `L.circleMarker([${endNode.lat},${endNode.lng}],{radius:16,fillColor:'#EF4444',color:'#fff',weight:3,fillOpacity:1}).addTo(map).bindPopup('<b>🔴 END: ${endNode.name}</b>');` : ""}
+
+        map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
+      `;
+    }
+  }
+
+  // Legend
+  const legend = `
+    var legend = L.control({ position: 'topleft' });
+    legend.onAdd = function(map) {
+      var div = L.DomUtil.create('div');
+      div.style.cssText = 'background:#111827;padding:8px 12px;border-radius:8px;border:1px solid #374151;font-size:11px;color:#F9FAFB;line-height:20px;';
+      div.innerHTML =
+        '<span style="color:#10B981">●</span> Operational Road<br/>' +
+        '<span style="color:#EF4444">●</span> Flooded<br/>' +
+        '<span style="color:#3B82F6">●</span> River Route<br/>' +
+        '<span style="color:#60A5FA">━</span> Active Route';
+      return div;
+    };
+    legend.addTo(map);
+  `;
 
   return `
 <!DOCTYPE html>
 <html>
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
-    body { margin: 0; padding: 0; background: #0A0E1A; }
-    #map { width: 100vw; height: 100vh; }
-    .leaflet-popup-content-wrapper {
-      background: #111827;
-      color: #F9FAFB;
-      border: 1px solid #1F2937;
-    }
-    .leaflet-popup-tip { background: #111827; }
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#0A0E1A}
+    #map{width:100vw;height:100vh}
+    .leaflet-popup-content-wrapper{background:#111827!important;color:#F9FAFB!important;border:1px solid #374151!important;border-radius:8px!important}
+    .leaflet-popup-content{color:#F9FAFB!important}
+    .leaflet-popup-tip{background:#111827!important}
+    .leaflet-tile{filter:brightness(0.7) saturate(0.8) hue-rotate(180deg) invert(1) hue-rotate(180deg) brightness(0.6)}
   </style>
 </head>
 <body>
 <div id="map"></div>
 <script>
-  var map = L.map('map', {
-    center: [24.8949, 91.8687],
-    zoom: 9,
-    zoomControl: true,
-  });
-
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OpenStreetMap',
-    maxZoom: 18,
-  }).addTo(map);
-
+  var map = L.map('map',{center:[24.9,91.7],zoom:9,zoomControl:true,attributionControl:false});
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18}).addTo(map);
+  ${edgeLines}
   ${nodeMarkers}
   ${routeLine}
+  ${legend}
 </script>
 </body>
-</html>
-  `;
+</html>`;
 };
 
 export default function MapScreen() {
   const [nodes, setNodes] = useState([]);
+  const [mapEdges, setMapEdges] = useState([]);
   const [vehicle, setVehicle] = useState("truck");
   const [origin, setOrigin] = useState("N1");
   const [selected, setSelected] = useState(null);
@@ -124,14 +177,19 @@ export default function MapScreen() {
   const [mlResult, setMlResult] = useState(null);
   const [mlLoading, setMlLoading] = useState(false);
   const [online, setOnline] = useState(false);
-  const [mapReady, setMapReady] = useState(false);
+  const [mapKey, setMapKey] = useState(0);
 
   useEffect(() => {
     fetchMap().then((r) => {
       setNodes(r.data.nodes);
+      setMapEdges(r.data.edges || []);
       setOnline(r.online);
     });
   }, []);
+
+  useEffect(() => {
+    setMapKey((prev) => prev + 1);
+  }, [route, mapEdges]);
 
   const doRoute = async (destId) => {
     setSelected(destId);
@@ -150,18 +208,16 @@ export default function MapScreen() {
     setMlLoading(false);
   };
 
-  const mapHTML = getMapHTML(nodes, route, []);
-
   return (
     <ScrollView style={s.screen} nestedScrollEnabled={true}>
-      {/* Live Map */}
       <SectionHeader title="🗺️  LIVE MAP  (Leaflet + OpenStreetMap)" />
+
       <View style={s.mapContainer}>
         {nodes.length > 0 ? (
           <WebView
-            source={{ html: mapHTML }}
+            key={mapKey}
+            source={{ html: getMapHTML(nodes, mapEdges, route) }}
             style={s.map}
-            onLoad={() => setMapReady(true)}
             javaScriptEnabled={true}
             domStorageEnabled={true}
             startInLoadingState={true}
@@ -178,9 +234,16 @@ export default function MapScreen() {
             <Text style={s.mapLoadingTxt}>Loading nodes...</Text>
           </View>
         )}
+
+        {route && route.status !== "no_path" && (
+          <View style={s.mapOverlay}>
+            <Text style={s.mapOverlayTxt}>
+              🔵 {route.path?.join(" → ")} · {route.total_time_mins} min
+            </Text>
+          </View>
+        )}
       </View>
 
-      {/* Online status */}
       <View
         style={[
           s.banner,
@@ -197,7 +260,6 @@ export default function MapScreen() {
         </Text>
       </View>
 
-      {/* Origin selector */}
       <SectionHeader title="SELECT ORIGIN" />
       <View style={s.btnRow}>
         {nodes.map((n) => (
@@ -210,7 +272,10 @@ export default function MapScreen() {
                 backgroundColor: "#081A0E",
               },
             ]}
-            onPress={() => setOrigin(n.id)}
+            onPress={() => {
+              setOrigin(n.id);
+              setRoute(null);
+            }}
           >
             <Text
               style={[
@@ -224,7 +289,6 @@ export default function MapScreen() {
         ))}
       </View>
 
-      {/* Vehicle selector */}
       <SectionHeader title="VEHICLE TYPE  (M4.3)" />
       <View style={s.vehicleRow}>
         {VEHICLES.map((v) => (
@@ -247,7 +311,6 @@ export default function MapScreen() {
         ))}
       </View>
 
-      {/* Node list */}
       <SectionHeader title="DESTINATION — TAP TO ROUTE" />
       {nodes.map((node) => {
         const nColor = NODE_COLORS[node.type] || COLORS.textMuted;
@@ -279,20 +342,24 @@ export default function MapScreen() {
         );
       })}
 
-      {/* Route result */}
       {(loading || route) && (
         <>
           <SectionHeader title="ROUTE RESULT" />
           {loading ? (
             <View style={s.loadCard}>
               <ActivityIndicator color={COLORS.primary} />
-              <Text style={s.loadTxt}>Running Dijkstra...</Text>
+              <Text style={s.loadTxt}>Running Dijkstra algorithm...</Text>
             </View>
           ) : (
             <View
               style={[
                 s.routeCard,
-                route.status === "no_path" && { borderColor: COLORS.danger },
+                route.status !== "no_path"
+                  ? {
+                      borderColor: COLORS.primary + "60",
+                      backgroundColor: "#0A1020",
+                    }
+                  : { borderColor: COLORS.danger },
               ]}
             >
               <Text style={s.routeTitle}>
@@ -304,7 +371,7 @@ export default function MapScreen() {
                 ["Path", route.path?.join(" → ") || "—"],
                 ["Time", route.total_time_mins + " min"],
                 ["Vehicle", route.vehicle || vehicle],
-                route.ms > 0 ? ["Speed", route.ms + "ms"] : null,
+                route.ms > 0 ? ["Computed", route.ms + "ms"] : null,
               ]
                 .filter(Boolean)
                 .map(([label, val], i) => (
@@ -324,7 +391,7 @@ export default function MapScreen() {
               {route.status !== "no_path" && (
                 <View style={s.mapNote}>
                   <Text style={s.mapNoteTxt}>
-                    📍 Blue dashed line shows route on map above
+                    🔵 Blue dashed line drawn on map above ↑
                   </Text>
                 </View>
               )}
@@ -333,10 +400,10 @@ export default function MapScreen() {
         </>
       )}
 
-      {/* ML Risk */}
       <SectionHeader title="ML ROUTE DECAY  (M7)" />
       <Text style={s.mlDesc}>
-        Tap an edge to predict flood risk using on-device ML model.
+        Tap an edge to predict flood risk using on-device ML model. High-risk
+        edges get penalized automatically.
       </Text>
       <View style={s.btnRow}>
         {["E1", "E2", "E3", "E4", "E5", "E6", "E7"].map((e) => (
@@ -427,16 +494,33 @@ export default function MapScreen() {
 
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: COLORS.background },
-  mapContainer: { height: 300, marginHorizontal: 0, overflow: "hidden" },
-  map: { flex: 1, height: 300 },
+  mapContainer: { height: 320, overflow: "hidden", position: "relative" },
+  map: { flex: 1, height: 320 },
   mapLoading: {
-    height: 300,
+    height: 320,
     backgroundColor: COLORS.surface,
     justifyContent: "center",
     alignItems: "center",
     gap: 12,
   },
   mapLoadingTxt: { color: COLORS.textMuted, fontSize: 13 },
+  mapOverlay: {
+    position: "absolute",
+    bottom: 8,
+    left: 8,
+    right: 8,
+    backgroundColor: "#0A0E1Aee",
+    borderRadius: 8,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: COLORS.primary + "60",
+  },
+  mapOverlayTxt: {
+    color: COLORS.primary,
+    fontSize: 11,
+    fontWeight: "700",
+    textAlign: "center",
+  },
   banner: {
     marginHorizontal: 16,
     marginTop: 12,
@@ -546,8 +630,15 @@ const s = StyleSheet.create({
     backgroundColor: "#0A1A30",
     borderRadius: 8,
     padding: 8,
+    borderWidth: 1,
+    borderColor: COLORS.primary + "40",
   },
-  mapNoteTxt: { color: COLORS.primary, fontSize: 11 },
+  mapNoteTxt: {
+    color: COLORS.primary,
+    fontSize: 12,
+    fontWeight: "600",
+    textAlign: "center",
+  },
   mlDesc: {
     color: COLORS.textMuted,
     fontSize: 11,
