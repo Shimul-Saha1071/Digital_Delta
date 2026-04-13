@@ -1,0 +1,159 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import json
+import time
+import os
+import random
+import sqlite3
+
+from routing.vrp_engine import DigitalDeltaRouter
+from auth.otp_manager import provision_device, verify_otp, generate_totp, DB_PATH
+from sync.crdt import LWWStore
+from ml.route_decay import load_or_train, predict_risk
+
+app = FastAPI(title="Digital Delta API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
+
+MAP_PATH = os.path.join(os.path.dirname(__file__), 'sylhet_map.json')
+with open(MAP_PATH) as f:
+    map_data = json.load(f)
+
+router   = DigitalDeltaRouter(map_data)
+crdt     = LWWStore('server')
+ml_model = load_or_train()
+
+print("")
+print("=" * 40)
+print("  Digital Delta Server RUNNING")
+print("  Open: http://127.0.0.1:8000/docs")
+print("=" * 40)
+print("")
+
+class RouteReq(BaseModel):
+    origin:       str = "N1"
+    destination:  str = "N3"
+    vehicle_type: str = "truck"
+
+class EdgeUpdateReq(BaseModel):
+    edge_id:    str
+    is_flooded: bool
+
+class ProvisionReq(BaseModel):
+    device_id: str
+    role:      str = "field_volunteer"
+
+class OTPVerifyReq(BaseModel):
+    device_id: str
+    otp:       str
+
+class SyncReq(BaseModel):
+    device_id:  str
+    last_clock: int  = 0
+    entries:    dict = {}
+
+@app.get("/")
+def root():
+    return {
+        "status": "Digital Delta is running",
+        "nodes":  len(map_data['nodes']),
+        "edges":  len(map_data['edges'])
+    }
+
+@app.get("/api/map")
+def get_map():
+    return map_data
+
+@app.post("/api/route")
+def compute_route(req: RouteReq):
+    start  = time.time()
+    result = router.compute_route(req.origin, req.destination, req.vehicle_type)
+    result['ms']             = round((time.time() - start) * 1000, 2)
+    result['drone_required'] = router.drone_required(req.destination)
+    return result
+
+@app.post("/api/edge/update")
+def update_edge(req: EdgeUpdateReq):
+    start   = time.time()
+    ok      = router.update_edge(req.edge_id, req.is_flooded)
+    elapsed = time.time() - start
+    return {
+        'success':         ok,
+        'ms':              round(elapsed * 1000, 2),
+        'within_2sec_sla': elapsed < 2.0
+    }
+
+@app.post("/api/auth/provision")
+def provision(req: ProvisionReq):
+    return provision_device(req.device_id, req.role)
+
+@app.post("/api/auth/otp")
+def get_otp(req: ProvisionReq):
+    conn = sqlite3.connect(DB_PATH)
+    row  = conn.execute(
+        'SELECT secret_key FROM devices WHERE device_id=?', (req.device_id,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        d = provision_device(req.device_id, req.role)
+        otp, exp = generate_totp(d['secret'])
+    else:
+        otp, exp = generate_totp(row[0])
+    return {'otp': otp, 'expires_in_seconds': exp}
+
+@app.post("/api/auth/verify")
+def verify(req: OTPVerifyReq):
+    ok = verify_otp(req.device_id, req.otp)
+    return {
+        'success': ok,
+        'token':   f"tok_{req.device_id}_{int(time.time())}" if ok else None
+    }
+
+@app.post("/api/sync")
+def sync(req: SyncReq):
+    conflicts = crdt.merge(req.entries)
+    delta     = crdt.delta_since(req.last_clock)
+    return {
+        'delta':        delta,
+        'conflicts':    conflicts,
+        'server_clock': time.time_ns()
+    }
+
+@app.get("/api/ml/risk/{edge_id}")
+def edge_risk(edge_id: str):
+    features = {
+        'rainfall':   random.uniform(30, 130),
+        'rate':       random.uniform(0, 15),
+        'elevation':  random.uniform(1, 15),
+        'saturation': random.uniform(0.3, 0.95),
+        'hours':      random.uniform(1, 48),
+        'road_type':  1
+    }
+    risk = predict_risk(ml_model, features)
+    return {
+        'edge_id':   edge_id,
+        'risk':      risk,
+        'high_risk': risk > 0.7,
+        'features':  features
+    }
+
+@app.get("/api/triage")
+def get_triage():
+    return {'items': [
+        {'id':'T1','cargo':'Antivenom',  'priority':'P0','eta_hrs':1.5,'sla_hrs':2, 'breach':False},
+        {'id':'T2','cargo':'Food Packs', 'priority':'P2','eta_hrs':28, 'sla_hrs':24,'breach':True },
+        {'id':'T3','cargo':'Clean Water','priority':'P1','eta_hrs':5,  'sla_hrs':6, 'breach':False},
+        {'id':'T4','cargo':'Medicine',   'priority':'P1','eta_hrs':7,  'sla_hrs':6, 'breach':True },
+    ]}
+
+@app.post("/api/network/reset")
+def reset():
+    global router
+    router = DigitalDeltaRouter(map_data)
+    return {'status': 'reset', 'message': 'Map restored'}
