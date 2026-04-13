@@ -1,0 +1,58 @@
+import numpy as np
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+import pickle
+import os
+
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'route_decay.pkl')
+
+def train():
+    print("Training ML model...")
+    np.random.seed(42)
+    n = 2000
+    rainfall   = np.random.exponential(50, n)
+    rate       = np.random.normal(5, 3, n)
+    elevation  = np.random.uniform(1, 20, n)
+    saturation = np.random.uniform(0, 1, n)
+    hours      = np.random.uniform(0, 72, n)
+    road_type  = np.random.choice([0, 1, 2], n)
+
+    X = np.column_stack([rainfall, rate, elevation, saturation, hours, road_type])
+    y = ((rainfall > 80) & (elevation < 5) & (saturation > 0.7)).astype(int)
+    noise = np.random.random(n) < 0.05
+    y[noise] = 1 - y[noise]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+    model = GradientBoostingClassifier(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+
+    report = classification_report(
+        y_test, model.predict(X_test), output_dict=True
+    )
+    print(f"  F1={report['1']['f1-score']:.3f}")
+    print(f"  Precision={report['1']['precision']:.3f}")
+
+    with open(MODEL_PATH, 'wb') as f:
+        pickle.dump(model, f)
+    print("ML model saved.")
+    return model
+
+def load_or_train():
+    if os.path.exists(MODEL_PATH):
+        with open(MODEL_PATH, 'rb') as f:
+            return pickle.load(f)
+    return train()
+
+def predict_risk(model, features):
+    X = [[
+        features.get('rainfall',   50),
+        features.get('rate',        5),
+        features.get('elevation',   8),
+        features.get('saturation', 0.6),
+        features.get('hours',      12),
+        features.get('road_type',   1)
+    ]]
+    return round(float(model.predict_proba(X)[0][1]), 3)
