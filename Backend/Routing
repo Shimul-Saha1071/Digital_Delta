@@ -1,0 +1,67 @@
+import networkx as nx
+
+class DigitalDeltaRouter:
+    def __init__(self, map_data):
+        self.map_data = map_data
+        self.graph = nx.DiGraph()
+        self._build_graph()
+
+    def _build_graph(self):
+        for node in self.map_data['nodes']:
+            self.graph.add_node(node['id'], **node)
+        for edge in self.map_data['edges']:
+            weight = 9999 if edge.get('is_flooded') else edge['base_weight_mins']
+            self.graph.add_edge(
+                edge['source'], edge['target'],
+                id=edge['id'],
+                type=edge['type'],
+                weight=weight,
+                is_flooded=edge.get('is_flooded', False),
+                base_weight_mins=edge['base_weight_mins']
+            )
+
+    def compute_route(self, origin, destination, vehicle_type='truck'):
+        allowed = {
+            'truck':     ['road'],
+            'speedboat': ['waterway', 'river'],
+            'drone':     ['road', 'waterway', 'river', 'airway']
+        }.get(vehicle_type, ['road'])
+
+        sub = nx.DiGraph()
+        for node, data in self.graph.nodes(data=True):
+            sub.add_node(node, **data)
+        for u, v, data in self.graph.edges(data=True):
+            if data['type'] in allowed and data['weight'] < 9999:
+                sub.add_edge(u, v, **data)
+
+        try:
+            path = nx.dijkstra_path(sub, origin, destination, weight='weight')
+            total = nx.dijkstra_path_length(sub, origin, destination, weight='weight')
+            return {
+                'path': path,
+                'total_time_mins': round(total, 2),
+                'status': 'success',
+                'vehicle': vehicle_type
+            }
+        except Exception:
+            return {
+                'path': [],
+                'total_time_mins': -1,
+                'status': 'no_path',
+                'vehicle': vehicle_type
+            }
+
+    def update_edge(self, edge_id, is_flooded):
+        for u, v, data in self.graph.edges(data=True):
+            if data.get('id') == edge_id:
+                new_weight = 9999 if is_flooded else data['base_weight_mins']
+                self.graph[u][v]['weight'] = new_weight
+                self.graph[u][v]['is_flooded'] = is_flooded
+                return True
+        return False
+
+    def drone_required(self, destination):
+        for v in ['truck', 'speedboat']:
+            if self.compute_route('N1', destination, v)['status'] == 'success':
+                return False
+        return True
