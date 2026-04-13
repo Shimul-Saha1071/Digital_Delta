@@ -1,0 +1,86 @@
+import hmac
+import hashlib
+import struct
+import time
+import sqlite3
+import os
+
+DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'auth.db')
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('''CREATE TABLE IF NOT EXISTS devices (
+        device_id TEXT PRIMARY KEY,
+        secret_key TEXT,
+        public_key TEXT,
+        role TEXT,
+        created_at INTEGER
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT,
+        device_id TEXT,
+        timestamp INTEGER,
+        previous_hash TEXT,
+        event_hash TEXT
+    )''')
+    conn.commit()
+    conn.close()
+
+def generate_totp(secret_hex):
+    secret = bytes.fromhex(secret_hex)
+    timestep = int(time.time()) // 30
+    msg = struct.pack('>Q', timestep)
+    h = hmac.new(secret, msg, hashlib.sha1).digest()
+    offset = h[-1] & 0x0F
+    code = struct.unpack('>I', h[offset:offset+4])[0]
+    otp = (code & 0x7FFFFFFF) % 1000000
+    expires_in = 30 - (int(time.time()) % 30)
+    return str(otp).zfill(6), expires_in
+
+def provision_device(device_id, role):
+    secret = hashlib.sha256(device_id.encode()).hexdigest()[:32]
+    pub_key = hashlib.sha256((device_id + "pubkey").encode()).hexdigest()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        'INSERT OR REPLACE INTO devices VALUES (?,?,?,?,?)',
+        (device_id, secret, pub_key, role, int(time.time()))
+    )
+    conn.commit()
+    conn.close()
+    append_audit('DEVICE_PROVISIONED', device_id)
+    return {'device_id': device_id, 'public_key': pub_key, 'role': role, 'secret': secret}
+
+def verify_otp(device_id, provided_otp):
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        'SELECT secret_key FROM devices WHERE device_id=?', (device_id,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        append_audit('OTP_FAILURE_UNKNOWN_DEVICE', device_id)
+        return False
+    expected, _ = generate_totp(row[0])
+    if provided_otp == expected:
+        append_audit('LOGIN_SUCCESS', device_id)
+        return True
+    append_audit('OTP_FAILURE', device_id)
+    return False
+
+def append_audit(event_type, device_id):
+    conn = sqlite3.connect(DB_PATH)
+    last = conn.execute(
+        'SELECT event_hash FROM audit_log ORDER BY id DESC LIMIT 1'
+    ).fetchone()
+    prev_hash = last[0] if last else '0' * 64
+    timestamp = int(time.time())
+    data = f"{event_type}{device_id}{timestamp}{prev_hash}"
+    event_hash = hashlib.sha256(data.encode()).hexdigest()
+    conn.execute(
+        'INSERT INTO audit_log VALUES (NULL,?,?,?,?,?)',
+        (event_type, device_id, timestamp, prev_hash, event_hash)
+    )
+    conn.commit()
+    conn.close()
+
+init_db()
