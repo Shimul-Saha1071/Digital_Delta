@@ -1,0 +1,38 @@
+import time
+
+class LWWStore:
+    def __init__(self, node_id):
+        self.node_id = node_id
+        self.entries = {}
+
+    def write(self, key, value):
+        ts = time.time_ns()
+        self.entries[key] = {
+            'value': value,
+            'timestamp': ts,
+            'node': self.node_id
+        }
+        return self.entries[key]
+
+    def merge(self, remote):
+        conflicts = []
+        for key, r in remote.items():
+            if key not in self.entries:
+                self.entries[key] = r
+            else:
+                local = self.entries[key]
+                if r['timestamp'] > local['timestamp']:
+                    self.entries[key] = r
+                elif r['timestamp'] == local['timestamp'] and r['node'] != local['node']:
+                    conflicts.append({
+                        'key': key,
+                        'local': local,
+                        'remote': r
+                    })
+        return conflicts
+
+    def delta_since(self, last_ns):
+        return {
+            k: v for k, v in self.entries.items()
+            if v['timestamp'] > last_ns
+        }
